@@ -5,41 +5,58 @@ import os
 import sys
 import json
 import traceback
-import func_timeout
+import scipy as sp
+import concurrent.futures
+import logging
+import multiprocessing
 
-limit = 10
+def Log(end=""):
+    def outer(func):
+        def inner(*pargs, **kwargs):
+            logging.info(f"Start function: {func.__name__} with args: {pargs}")
+            try:
+                func(*pargs, **kwargs)
+            finally:
+                logging.info(f"Finished function: {func.__name__} with args: {pargs}{end}")
+        return inner
+    return outer
 
-def Log(func):
-    def inner(*pargs):
-        print(f"Start function : {func.__name__} with args : {pargs}")
-        try:
-            return func_timeout.func_timeout(limit, func, args=pargs)
-        
-        except func_timeout.FunctionTimedOut as e:
-            print(f"Function : {func.__name__} ran for {limit}s and did not terminate, skipping ...")
+def setup_logger():
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(processName)s] %(message)s",
+        handlers=[
+            logging.StreamHandler(sys.stdout)
+        ]
+    )
 
-        finally:
-            print(f"Finished function : {func.__name__} with args : {pargs}\n\n")
+def worker(filename):
+    setup_logger()
+    process_file(filename)
 
-    return inner
-
-@Log
+@Log(end="\n\n")
 def process_file(filename : str) -> None:
 
-    with open(f"./MetaData/{filename.split(".")[0]}.json") as file:
-        config = json.load(file)
-    
-    # Handle file configuration
-    graph_type = config["GraphType"]
-    read_method = "read_weighted_edgelist" if config["EdgesWeighted"] == "True" else "read_edgelist"
-    edge_attribs = config.get("EdgeAttributes") 
-    edge_attribs = [] if edge_attribs == None else edge_attribs
+    if(filename.endswith(".edges")):
 
-    try:
-        G = eval(f"nx.{read_method}('./Data/{filename}', create_using=nx.{graph_type}())")
-    except Exception as e:
-        print(f"Failed to process {filename} with metadata : {config} due to : \n {e}")
-        return
+        with open(f"./MetaData/{filename.split(".")[0]}.json") as file:
+            config = json.load(file)
+    
+        # Handle file configuration
+        graph_type = config["GraphType"]
+        read_method = "read_weighted_edgelist" if config["EdgesWeighted"] == "True" else "read_edgelist"
+        edge_attribs = config.get("EdgeAttributes") 
+        edge_attribs = [] if edge_attribs == None else edge_attribs
+
+        try:
+            G = eval(f"nx.{read_method}('./Data/{filename}', create_using=nx.{graph_type}())")
+        except Exception as e:
+            print(f"Failed to process {filename} with metadata : {config} due to : \n {e}")
+            return
+        
+    elif(filename.endswith(".mtx")):
+        M = sp.io.mmread(f"./Data/{filename}")
+        G = nx.from_scipy_sparse_array(M)
 
     algorithm_signatures_collection = ["BE", "MINRES", "Lip", "LowRankCore", "LapCore", "LapSgnCore", "Rombach", "Rossa", "Surprise", "KM_ER", "KM_config", "Divisive"]
 
@@ -53,37 +70,50 @@ def process_file(filename : str) -> None:
 
 
     for algorithm_signature in algorithm_signatures:
+        process_file_with_algorithm(filename, algorithm_signature, G)
 
-        algorithm = eval(f"cpnet.{algorithm_signature}()")
-        try :
-            algorithm.detect(G)
-        
-        except Exception as e:
-            print(f"Algorithm : {algorithm_signature} failed to detect on the dataset : {filename} using the config : {config} due to :\n {traceback.format_exc()}")
-            continue
-        
+@Log()
+def process_file_with_algorithm(filename : str, algorithm_signature: str, G):
 
-        c = algorithm.get_pair_id()
-        x = algorithm.get_coreness()
-        
-        # Seperate each Dataset into a Folder in Results
-        path = os.path.join(os.getcwd(), "Results", filename.split("." )[0])
-        if not os.path.exists(path):
-            os.mkdir(os.path.join(path))
+    if os.path.exists(os.path.join("Results", filename.split(".")[0], f"{algorithm_signature}.png")):
+        print("Image already generated, Skipping Recomputation ...")
+        return
 
-        #Figures
-        _, ax = plt.subplots(nrows=1, ncols=1, figsize=(10,8))
-        ax = plt.gca()
-        ax, _ = cpnet.draw(G, c, x, ax)
-        plt.savefig(os.path.join(path, f"{algorithm_signature}.png"))
+    algorithm = eval(f"cpnet.{algorithm_signature}()")
+    try :
+        algorithm.detect(G)
+    
+    except Exception as e:
+        print(f"Algorithm : {algorithm_signature} failed to detect on the dataset : {filename} using the config : {config} due to :\n {traceback.format_exc()}")
+        return
+    
+
+    c = algorithm.get_pair_id()
+    x = algorithm.get_coreness()
+    
+    # Seperate each Dataset into a Folder in Results
+    path = os.path.join(os.getcwd(), "Results", filename.split("." )[0])
+    if not os.path.exists(path):
+        os.mkdir(os.path.join(path))
+
+    #Figures
+    _, ax = plt.subplots(nrows=1, ncols=1, figsize=(10,8))
+    ax = plt.gca()
+    ax, _ = cpnet.draw(G, c, x, ax)
+    plt.savefig(os.path.join(path, f"{algorithm_signature}.png"))
+
 
 if __name__ == "__main__":
 
     # Iterate Through the files in the /Data directory
     relative_directory_path = os.path.join(os.getcwd(), "Data")
-    for filename in os.listdir(relative_directory_path):
-        if not filename.endswith(".edges"):
-            continue
-        
-        process_file(filename)        
+    files = [
+        f for f in os.listdir(relative_directory_path)
+        if f.endswith(".edges") or
+        f.endswith(".mtx")
+    ]
+
+    with concurrent.futures.ProcessPoolExecutor() as executor:
+        executor.map(worker, files)
+
 
