@@ -8,7 +8,7 @@ import traceback
 import scipy as sp
 import concurrent.futures
 import logging
-import multiprocessing
+from colorama import Fore
 
 def Log(end=""):
     def outer(func):
@@ -16,6 +16,10 @@ def Log(end=""):
             logging.info(f"Start function: {func.__name__} with args: {pargs}")
             try:
                 func(*pargs, **kwargs)
+            
+            except Exception as e:
+                logging.info(Fore.RED + f"Failure : Function : {func.__name__} failed with args : {pargs} due to : \n{e}" + Fore.WHITE)
+            
             finally:
                 logging.info(f"Finished function: {func.__name__} with args: {pargs}{end}")
         return inner
@@ -24,7 +28,7 @@ def Log(end=""):
 def setup_logger():
     logging.basicConfig(
         level=logging.INFO,
-        format="%(asctime)s [%(processName)s] %(message)s",
+        format="%(asctime)s [%(threadName)s] %(message)s",
         handlers=[
             logging.StreamHandler(sys.stdout)
         ]
@@ -34,7 +38,7 @@ def worker(filename):
     setup_logger()
     process_file(filename)
 
-@Log(end="\n\n")
+@Log()
 def process_file(filename : str) -> None:
 
     if(filename.endswith(".edges")):
@@ -49,9 +53,12 @@ def process_file(filename : str) -> None:
         edge_attribs = [] if edge_attribs == None else edge_attribs
 
         try:
+
             G = eval(f"nx.{read_method}('./Data/{filename}', create_using=nx.{graph_type}())")
+
         except Exception as e:
-            print(f"Failed to process {filename} with metadata : {config} due to : \n {e}")
+
+            logging.info(Fore.RED + f"Failed to process {filename} with metadata : {config} due to : \n {e}" + Fore.WHITE)
             return
         
     elif(filename.endswith(".mtx")):
@@ -68,7 +75,6 @@ def process_file(filename : str) -> None:
     else:
         algorithm_signatures = [input for input in args[1:] if input in algorithm_signatures_collection]
 
-
     for algorithm_signature in algorithm_signatures:
         process_file_with_algorithm(filename, algorithm_signature, G)
 
@@ -76,17 +82,19 @@ def process_file(filename : str) -> None:
 def process_file_with_algorithm(filename : str, algorithm_signature: str, G):
 
     if os.path.exists(os.path.join("Results", filename.split(".")[0], f"{algorithm_signature}.png")):
-        print("Image already generated, Skipping Recomputation ...")
+        logging.info("Image already generated, Skipping Recomputation ...")
         return
 
     algorithm = eval(f"cpnet.{algorithm_signature}()")
+
     try :
+
         algorithm.detect(G)
     
     except Exception as e:
-        print(f"Algorithm : {algorithm_signature} failed to detect on the dataset : {filename} using the config : {config} due to :\n {traceback.format_exc()}")
+
+        logging.info(Fore.RED + f"Algorithm : {algorithm_signature} failed to detect on the dataset : {filename} due to :\n {traceback.format_exc(e)}" + Fore.WHITE)
         return
-    
 
     c = algorithm.get_pair_id()
     x = algorithm.get_coreness()
@@ -113,7 +121,7 @@ if __name__ == "__main__":
         f.endswith(".mtx")
     ]
 
-    with concurrent.futures.ProcessPoolExecutor() as executor:
-        executor.map(worker, files)
+    with concurrent.futures.ThreadPoolExecutor() as executor:
+        executor.map(worker, files) 
 
 
