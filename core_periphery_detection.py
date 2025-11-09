@@ -39,76 +39,109 @@ def worker(filename):
     process_file(filename)
 
 @Log()
-def process_file(filename : str) -> None:
-
-    if(filename.endswith(".edges")):
-
-        with open(f"./MetaData/{filename.split(".")[0]}.json") as file:
+def process_file(filename: str) -> None:
+    if filename.endswith(".edges"):
+        with open(f"./MetaData/{filename.split('.')[0]}.json") as file:
             config = json.load(file)
-    
+
         # Handle file configuration
         graph_type = config["GraphType"]
-        read_method = "read_weighted_edgelist" if config["EdgesWeighted"] == "True" else "read_edgelist"
-        edge_attribs = config.get("EdgeAttributes") 
-        edge_attribs = [] if edge_attribs == None else edge_attribs
+        read_method = (
+            "read_weighted_edgelist"
+            if config["EdgesWeighted"] == "True"
+            else "read_edgelist"
+        )
+        edge_attribs = config.get("EdgeAttributes")
+        edge_attribs = [] if edge_attribs is None else edge_attribs
+
+        # --- Detect delimiter automatically ---
+        data_path = f"./Data/{filename}"
+        delimiter = None
+        with open(data_path, "r") as f:
+            for line in f:
+                if not line.strip() or line.startswith(("#", "%")):
+                    continue
+                if "," in line:
+                    delimiter = ","
+                elif "\t" in line:
+                    delimiter = "\t"
+                elif ";" in line:
+                    delimiter = ";"
+                else:
+                    delimiter = None  # whitespace default
+                break
+
+        logging.info(f"Detected delimiter for {filename}: {repr(delimiter or 'whitespace')}")
 
         try:
-
-            G = eval(f"nx.{read_method}('./Data/{filename}', create_using=nx.{graph_type}())")
+            # --- Build eval string safely ---
+            cmd = (
+                f"nx.{read_method}("
+                f"r'{data_path}', "
+                f"create_using=nx.{graph_type}(), "
+                f"delimiter={repr(delimiter)}, "
+                f"comments='#')"
+            )
+            G = eval(cmd)
 
         except Exception as e:
-
-            logging.info(Fore.RED + f"Failed to process {filename} with metadata : {config} due to : \n {e}" + Fore.WHITE)
+            logging.info(
+                Fore.RED
+                + f"Failed to process {filename} with metadata {config} due to:\n{e}"
+                + Fore.WHITE
+            )
             return
-        
-    elif(filename.endswith(".mtx")):
+
+    elif filename.endswith(".mtx"):
         M = sp.io.mmread(f"./Data/{filename}")
         G = nx.from_scipy_sparse_array(M)
 
-    algorithm_signatures_collection = ["BE", "MINRES", "Lip", "LowRankCore", "LapCore", "LapSgnCore", "Rombach", "Rossa", "Surprise", "KM_ER", "KM_config", "Divisive"]
+    # --- Run algorithms ---
+    algorithm_signatures_collection = [
+        "BE"
+    ]
 
-    # First argument is the name of the script, i.e. "core_periphery_detection.py"
     args = sys.argv
     if len(args) == 1:
         algorithm_signatures = algorithm_signatures_collection
-
     else:
-        algorithm_signatures = [input for input in args[1:] if input in algorithm_signatures_collection]
+        algorithm_signatures = [
+            arg for arg in args[1:] if arg in algorithm_signatures_collection
+        ]
 
     for algorithm_signature in algorithm_signatures:
         process_file_with_algorithm(filename, algorithm_signature, G)
 
 @Log()
-def process_file_with_algorithm(filename : str, algorithm_signature: str, G):
-
-    if os.path.exists(os.path.join("Results", filename.split(".")[0], f"{algorithm_signature}.png")):
-        logging.info("Image already generated, Skipping Recomputation ...")
-        return
-
+def process_file_with_algorithm(filename: str, algorithm_signature: str, G):
     algorithm = eval(f"cpnet.{algorithm_signature}()")
 
-    try :
-
+    try:
         algorithm.detect(G)
-    
     except Exception as e:
-
         logging.info(Fore.RED + f"Algorithm : {algorithm_signature} failed to detect on the dataset : {filename} due to :\n {traceback.format_exc(e)}" + Fore.WHITE)
         return
 
     c = algorithm.get_pair_id()
     x = algorithm.get_coreness()
-    
-    # Seperate each Dataset into a Folder in Results
-    path = os.path.join(os.getcwd(), "Results", filename.split("." )[0])
-    if not os.path.exists(path):
-        os.mkdir(os.path.join(path))
 
-    #Figures
-    _, ax = plt.subplots(nrows=1, ncols=1, figsize=(10,8))
-    ax = plt.gca()
-    ax, _ = cpnet.draw(G, c, x, ax)
-    plt.savefig(os.path.join(path, f"{algorithm_signature}.png"))
+    # Save core-periphery attributes
+    nx.set_node_attributes(G, c, name="core_periphery")
+    nx.set_node_attributes(G, x, name="coreness")
+
+    # Ensure results folder exists
+    path = os.path.join(os.getcwd(), "Results", filename.split(".")[0])
+    if not os.path.exists(path):
+        os.mkdir(path)
+
+    # Export to GEXF
+    gexf_path = os.path.join(path, f"{algorithm_signature}.gexf")
+    try:
+        nx.write_gexf(G, gexf_path)
+        logging.info(f"Graph with core-periphery attributes exported to {gexf_path}")
+    except Exception as e:
+        logging.info(Fore.RED + f"Failed to export GEXF for {filename} due to:\n{traceback.format_exc(e)}" + Fore.WHITE)
+
 
 
 if __name__ == "__main__":
