@@ -52,9 +52,17 @@ def process_file(filename: str) -> None:
     file_path = os.path.join("Data", filename)
     with open(file_path, "r") as f:
         for line in f:
-            if line.strip():
-                parts = line.strip().split()
-                break
+            if not line.strip() or line.startswith(("#", "%")):
+                continue  # skip comments or empty lines
+            # Try to guess delimiter
+            if "," in line:
+                delimiter = ","
+            elif "\t" in line:
+                delimiter = "\t"
+            else:
+                delimiter = None  # default: any whitespace
+            parts = line.strip().split(delimiter)
+            break
 
     if len(parts) == 3:
         weighted = True
