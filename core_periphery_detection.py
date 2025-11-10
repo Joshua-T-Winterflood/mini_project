@@ -38,61 +38,35 @@ def worker(filename):
     setup_logger()
     process_file(filename)
 
+graph_types = {
+    "Graph" : nx.Graph,
+    "DiGraph" : nx.DiGraph
+}
+
 @Log()
 def process_file(filename: str) -> None:
-    if filename.endswith(".edges"):
-        with open(f"./MetaData/{filename.split('.')[0]}.json") as file:
+    if(filename.endswith(".edges")):
+
+        with open(f"./MetaData/{filename.split(".")[0]}.json") as file:
             config = json.load(file)
-
-        # Handle file configuration
-        graph_type = config["GraphType"]
-        read_method = (
-            "read_weighted_edgelist"
-            if config["EdgesWeighted"] == "True"
-            else "read_edgelist"
-        )
-        edge_attribs = config.get("EdgeAttributes")
-        edge_attribs = [] if edge_attribs is None else edge_attribs
-
-        # --- Detect delimiter automatically ---
-        data_path = f"./Data/{filename}"
-        delimiter = None
-        with open(data_path, "r") as f:
-            for line in f:
-                if not line.strip() or line.startswith(("#", "%")):
-                    continue
-                if "," in line:
-                    delimiter = ","
-                elif "\t" in line:
-                    delimiter = "\t"
-                elif ";" in line:
-                    delimiter = ";"
-                else:
-                    delimiter = None  # whitespace default
-                break
-
-        logging.info(f"Detected delimiter for {filename}: {repr(delimiter or 'whitespace')}")
+    
+        graph_type = graph_types.get(config["GraphType"])
+        if graph_type == None:
+            graph_type = nx.Graph
+        read_method = nx.read_weighted_edgelist if config["EdgesWeighted"] == "True" else nx.read_edgelist
+        edge_attribs = config.get("EdgeAttributes") 
+        edge_attribs = [] if edge_attribs == None else edge_attribs
 
         try:
-            # --- Build eval string safely ---
-            cmd = (
-                f"nx.{read_method}("
-                f"r'{data_path}', "
-                f"create_using=nx.{graph_type}(), "
-                f"delimiter={repr(delimiter)}, "
-                f"comments='#')"
-            )
-            G = eval(cmd)
+
+            G = read_method(f'./Data/{filename}', create_using=graph_type())
 
         except Exception as e:
-            logging.info(
-                Fore.RED
-                + f"Failed to process {filename} with metadata {config} due to:\n{e}"
-                + Fore.WHITE
-            )
-            return
 
-    elif filename.endswith(".mtx"):
+            logging.info(Fore.RED + f"Failed to process {filename} with metadata : {config} due to : \n {e}" + Fore.WHITE)
+            return
+        
+    elif(filename.endswith(".mtx")):
         M = sp.io.mmread(f"./Data/{filename}")
         G = nx.from_scipy_sparse_array(M)
 
@@ -101,19 +75,24 @@ def process_file(filename: str) -> None:
         "BE"
     ]
 
-    args = sys.argv
-    if len(args) == 1:
-        algorithm_signatures = algorithm_signatures_collection
-    else:
-        algorithm_signatures = [
-            arg for arg in args[1:] if arg in algorithm_signatures_collection
-        ]
-
-    for algorithm_signature in algorithm_signatures:
+    for algorithm_signature in algorithm_signatures_collection:
         process_file_with_algorithm(filename, algorithm_signature, G)
 
 @Log()
 def process_file_with_algorithm(filename: str, algorithm_signature: str, G):
+
+    path = os.path.join(os.getcwd(), "Results", algorithm_signature)
+    gexf_path = os.path.join(path, f"BE_{filename.split(".")[0]}.gexf")
+
+    path_degree_distribution = os.path.join(os.getcwd(), "Results", "Degree_Distributions", algorithm_signature)
+    if not os.path.exists(path_degree_distribution):
+        os.makedirs(path_degree_distribution)
+    file_path_degree_distribution = os.path.join(path_degree_distribution, f"{algorithm_signature}_{filename.split(".")[0]}_degree_distribution.png")
+
+    if os.path.exists(gexf_path) and os.path.exists(file_path_degree_distribution):
+        logging.info(f"Images already generated, skipping recomputation ...")
+        return
+
     algorithm = eval(f"cpnet.{algorithm_signature}()")
 
     try:
@@ -130,18 +109,36 @@ def process_file_with_algorithm(filename: str, algorithm_signature: str, G):
     nx.set_node_attributes(G, x, name="coreness")
 
     # Ensure results folder exists
-    path = os.path.join(os.getcwd(), "Results", filename.split(".")[0])
     if not os.path.exists(path):
         os.mkdir(path)
 
     # Export to GEXF
-    gexf_path = os.path.join(path, f"{algorithm_signature}.gexf")
     try:
         nx.write_gexf(G, gexf_path)
         logging.info(f"Graph with core-periphery attributes exported to {gexf_path}")
     except Exception as e:
         logging.info(Fore.RED + f"Failed to export GEXF for {filename} due to:\n{traceback.format_exc(e)}" + Fore.WHITE)
 
+    # Get the degree distributions
+    s = {}
+    for node_id, coreness in x.items():
+        if coreness in s:
+            s[coreness] = (s[coreness][0] + G.degree[node_id], s[coreness][1] + 1)
+        else:
+            s[coreness] = (G.degree[node_id], 1)
+    
+    x = [coreness for coreness, _ in s.items()]
+    y = [value[0] / value[1] for _, value in s.items()]
+    colors = ['#2BB5FF' if c == 0 else '#FF1C19' if c == 1 else 'gray' for c in x]
+
+    fig, ax = plt.subplots(figsize=(10, 8))
+    ax.bar(x, y, color=colors)  # line plot with markers
+    ax.set_xlabel('Coreness')
+    ax.set_ylabel('Average Degree')
+    ax.set_title('Average Degree per Coreness')
+    ax.set_xticks(x)
+
+    plt.savefig(file_path_degree_distribution) 
 
 
 if __name__ == "__main__":

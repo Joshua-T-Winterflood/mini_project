@@ -6,7 +6,9 @@ import logging
 import traceback
 import networkx as nx
 from colorama import Fore
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ProcessPoolExecutor
+import scipy as sp
+import matplotlib.pyplot as plt
 
 
 # -------------------------------
@@ -15,7 +17,7 @@ from concurrent.futures import ThreadPoolExecutor
 def setup_logger():
     logging.basicConfig(
         level=logging.INFO,
-        format="%(asctime)s [%(threadName)s] %(message)s",
+        format="%(asctime)s [%(processName)s] %(message)s",
         handlers=[logging.StreamHandler(sys.stdout)],
     )
 
@@ -40,6 +42,11 @@ def Log(end=""):
         return inner
     return outer
 
+graph_types = {
+    "Graph" : nx.Graph,
+    "DiGraph" : nx.DiGraph
+}
+
 
 # -------------------------------
 # Louvain processing for one file
@@ -47,34 +54,38 @@ def Log(end=""):
 @Log()
 def process_file(filename: str) -> None:
     logging.info(f"Processing file: {filename}")
+    weighted = False    
 
-    # 1️⃣ Detect weighted vs unweighted automatically
-    file_path = os.path.join("Data", filename)
-    with open(file_path, "r") as f:
-        for line in f:
-            if not line.strip() or line.startswith(("#", "%")):
-                continue  # skip comments or empty lines
-            # Try to guess delimiter
-            if "," in line:
-                delimiter = ","
-            elif "\t" in line:
-                delimiter = "\t"
-            else:
-                delimiter = None  # default: any whitespace
-            parts = line.strip().split(delimiter)
-            break
+    if(filename.endswith(".edges")):
 
-    if len(parts) == 3:
-        weighted = True
-        G = nx.read_edgelist(file_path, data=(("weight", float),))
-        logging.info(f"Detected weighted edgelist: {filename}")
-    elif len(parts) == 2:
-        weighted = False
-        G = nx.read_edgelist(file_path)
-        logging.info(f"Detected unweighted edgelist: {filename}")
-    else:
-        logging.error(f"File format not recognized: {filename}")
-        return
+        with open(f"./MetaData/{filename.split(".")[0]}.json") as file:
+            config = json.load(file)
+    
+        graph_type = graph_types.get(config["GraphType"])
+        if graph_type == None:
+            graph_type = nx.Graph
+
+        if config["EdgesWeighted"] == "True":
+            read_method = nx.read_weighted_edgelist
+            weighted = True
+        else:
+            read_method = nx.read_edgelist
+    
+        edge_attribs = config.get("EdgeAttributes") 
+        edge_attribs = [] if edge_attribs == None else edge_attribs
+
+        try:
+
+            G = read_method(f'./Data/{filename}', create_using=graph_type())
+
+        except Exception as e:
+
+            logging.info(Fore.RED + f"Failed to process {filename} with metadata : {config} due to : \n {e}" + Fore.WHITE)
+            return
+        
+    elif(filename.endswith(".mtx")):
+        M = sp.io.mmread(f"./Data/{filename}")
+        G = nx.from_scipy_sparse_array(M)
 
     # 2️⃣ Run Louvain community detection
     louvain = nx.community.louvain_communities(G, weight="weight" if weighted else None)
@@ -82,12 +93,56 @@ def process_file(filename: str) -> None:
     nx.set_node_attributes(G, comms, "community")
 
     # 3️⃣ Export to GEXF
-    result_dir = os.path.join("Results", filename.split(".")[0])
+    result_dir = os.path.join("Results", "Louvain")
     os.makedirs(result_dir, exist_ok=True)
-    output_file = os.path.join(result_dir, "Louvain.gexf")
+    output_file = os.path.join(result_dir, f"Louvain_{filename.split(".")[0]}.gexf")
 
     nx.write_gexf(G, output_file)
     logging.info(Fore.GREEN + f"✅ Exported {output_file}" + Fore.WHITE)
+
+    # Get the degree distributions
+    path_degree_distribution = os.path.join(os.getcwd(), "Results", "Degree_Distributions", "Louvain")
+    if not os.path.exists(path_degree_distribution):
+        os.makedirs(path_degree_distribution)
+    file_path_degree_distribution = os.path.join(path_degree_distribution, f"Louvain_{filename.split(".")[0]}_degree_distribution.png")
+
+    s = {}
+    for node_id, comm_id in comms.items():
+        
+        # Limit to 5 commmunities and group the rest into a singular community
+        if comm_id >= 5:
+            if 5 in s:
+                s[5] = s[5] = (s[5][0] + G.degree[node_id], s[5][1] + 1)
+            else:
+                s[5] = (G.degree[node_id], 1)
+        else:    
+            if comm_id in s:
+                s[comm_id] = (s[comm_id][0] + G.degree[node_id], s[comm_id][1] + 1)
+            else:
+                s[comm_id] = (G.degree[node_id], 1)
+    
+    x = [community for community, _ in s.items()]
+    y = [value[0] / value[1] for _, value in s.items()]
+
+
+    color_map = {
+    0: '#FFA500',  # custom_orange
+    1: '#8A2BE2',  # custom_violet
+    2: '#FFFF00',  # custom_yellow
+    3: '#8B4513',  # custom_brown
+    4: '#008000',  # custom_green
+    }
+
+    colors = [color_map.get(comm_id, '#CCCCCC') for comm_id in x] 
+
+    fig, ax = plt.subplots(figsize=(10, 8))
+    ax.bar(x, y, color=colors)  # line plot with markers
+    ax.set_xlabel('Communities')
+    ax.set_ylabel('Average Degree')
+    ax.set_title('Average Degree per Community')
+    ax.set_xticks(x)
+
+    plt.savefig(file_path_degree_distribution) 
 
 
 # -------------------------------
@@ -109,7 +164,7 @@ if __name__ == "__main__":
     files = [
         f
         for f in os.listdir(data_dir)
-        if f.endswith(".edges") or f.endswith(".edgelist")
+        if f.endswith(".edges") or f.endswith(".edgelist") or f.endswith(".mtx")
     ]
 
     if not files:
@@ -119,5 +174,5 @@ if __name__ == "__main__":
     logging.info(f"Found {len(files)} graph file(s) to process.")
 
     # Process all files in parallel
-    with ThreadPoolExecutor() as executor:
+    with ProcessPoolExecutor() as executor:
         executor.map(worker, files)
