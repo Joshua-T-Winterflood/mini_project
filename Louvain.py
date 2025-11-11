@@ -71,9 +71,6 @@ def process_file(filename: str) -> None:
         else:
             read_method = nx.read_edgelist
     
-        edge_attribs = config.get("EdgeAttributes") 
-        edge_attribs = [] if edge_attribs == None else edge_attribs
-
         try:
 
             G = read_method(f'./Data/{filename}', create_using=graph_type())
@@ -93,7 +90,7 @@ def process_file(filename: str) -> None:
     nx.set_node_attributes(G, comms, "community")
 
     # 3️⃣ Export to GEXF
-    result_dir = os.path.join("Results", "Louvain")
+    result_dir = os.path.join("Results", "GEXF", "Louvain")
     os.makedirs(result_dir, exist_ok=True)
     output_file = os.path.join(result_dir, f"Louvain_{filename.split(".")[0]}.gexf")
 
@@ -106,34 +103,50 @@ def process_file(filename: str) -> None:
         os.makedirs(path_degree_distribution)
     file_path_degree_distribution = os.path.join(path_degree_distribution, f"Louvain_{filename.split(".")[0]}_degree_distribution.png")
 
+
+    node_count_per_community = {}
+    for node_id, comm_id in comms.items():
+        node_count_per_community[comm_id] = node_count_per_community.get(comm_id, 0) + 1
+
+    major_communities = sorted(node_count_per_community.items(), key=lambda x: x[1],  reverse=True)[:5]
+
+    major_communities = [t[0] for t in major_communities]
+
     s = {}
+
     for node_id, comm_id in comms.items():
         
         # Limit to 5 commmunities and group the rest into a singular community
-        if comm_id >= 5:
-            if 5 in s:
-                s[5] = s[5] = (s[5][0] + G.degree[node_id], s[5][1] + 1)
-            else:
-                s[5] = (G.degree[node_id], 1)
+        free_comm_id = -1
+        if comm_id not in major_communities:
+            curr_val = s.get(free_comm_id, (0, 0))
+            s[free_comm_id] = (curr_val[0] + G.degree[node_id], curr_val[1] + 1)
         else:    
-            if comm_id in s:
-                s[comm_id] = (s[comm_id][0] + G.degree[node_id], s[comm_id][1] + 1)
-            else:
-                s[comm_id] = (G.degree[node_id], 1)
-    
-    x = [community for community, _ in s.items()]
-    y = [value[0] / value[1] for _, value in s.items()]
+            curr_val = s.get(comm_id, (0, 0))
+            s[comm_id] = (curr_val[0] + G.degree[node_id], curr_val[1] + 1)
 
+    sorted_s = sorted(s.items(), key=lambda x : x[0], reverse=True)
+    community = [community for community, _ in sorted_s]
+    sorted_communities = sorted(
+        s.keys(),
+        key=lambda cid: (cid == -1, cid)  # (False, x) comes before (True, x)
+    )
+    new_label_map = {old: new for new, old in enumerate(sorted_communities)}
+    s_relabelled = {new_label_map[old]: s[old] for old in sorted_communities}
 
-    color_map = {
-    0: '#FFA500',  # custom_orange
-    1: '#8A2BE2',  # custom_violet
-    2: '#FFFF00',  # custom_yellow
-    3: '#8B4513',  # custom_brown
-    4: '#008000',  # custom_green
-    }
+    x = list(s_relabelled.keys())
+    y = [value[0] / value[1] for _, value in sorted_s]
 
-    colors = [color_map.get(comm_id, '#CCCCCC') for comm_id in x] 
+    color_map = [
+    '#FFA500',  # custom_orange
+    '#8A2BE2',  # custom_violet
+    '#FFFF00',  # custom_yellow
+    '#8B4513',  # custom_brown
+    '#008000',  # custom_green
+    '#CCCCCC'
+    ]
+
+    colors = [color for color in color_map] 
 
     fig, ax = plt.subplots(figsize=(10, 8))
     ax.bar(x, y, color=colors)  # line plot with markers

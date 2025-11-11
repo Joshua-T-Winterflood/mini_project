@@ -53,9 +53,8 @@ def process_file(filename: str) -> None:
         graph_type = graph_types.get(config["GraphType"])
         if graph_type == None:
             graph_type = nx.Graph
+
         read_method = nx.read_weighted_edgelist if config["EdgesWeighted"] == "True" else nx.read_edgelist
-        edge_attribs = config.get("EdgeAttributes") 
-        edge_attribs = [] if edge_attribs == None else edge_attribs
 
         try:
 
@@ -70,18 +69,17 @@ def process_file(filename: str) -> None:
         M = sp.io.mmread(f"./Data/{filename}")
         G = nx.from_scipy_sparse_array(M)
 
-    # --- Run algorithms ---
     algorithm_signatures_collection = [
         "BE"
     ]
-
     for algorithm_signature in algorithm_signatures_collection:
         process_file_with_algorithm(filename, algorithm_signature, G)
 
 @Log()
 def process_file_with_algorithm(filename: str, algorithm_signature: str, G):
 
-    path = os.path.join(os.getcwd(), "Results", algorithm_signature)
+    # File Handling
+    path = os.path.join(os.getcwd(), "Results", "GEXF", algorithm_signature)
     gexf_path = os.path.join(path, f"BE_{filename.split(".")[0]}.gexf")
 
     path_degree_distribution = os.path.join(os.getcwd(), "Results", "Degree_Distributions", algorithm_signature)
@@ -93,10 +91,13 @@ def process_file_with_algorithm(filename: str, algorithm_signature: str, G):
         logging.info(f"Images already generated, skipping recomputation ...")
         return
 
+    # Apply Algorithm
     algorithm = eval(f"cpnet.{algorithm_signature}()")
 
     try:
+
         algorithm.detect(G)
+
     except Exception as e:
         logging.info(Fore.RED + f"Algorithm : {algorithm_signature} failed to detect on the dataset : {filename} due to :\n {traceback.format_exc(e)}" + Fore.WHITE)
         return
@@ -104,13 +105,11 @@ def process_file_with_algorithm(filename: str, algorithm_signature: str, G):
     c = algorithm.get_pair_id()
     x = algorithm.get_coreness()
 
-    # Save core-periphery attributes
     nx.set_node_attributes(G, c, name="core_periphery")
     nx.set_node_attributes(G, x, name="coreness")
 
-    # Ensure results folder exists
     if not os.path.exists(path):
-        os.mkdir(path)
+        os.makedirs(path)
 
     # Export to GEXF
     try:
@@ -151,7 +150,7 @@ if __name__ == "__main__":
         f.endswith(".mtx")
     ]
 
-    with concurrent.futures.ThreadPoolExecutor() as executor:
+    with concurrent.futures.ProcessPoolExecutor() as executor:
         executor.map(worker, files) 
 
 
